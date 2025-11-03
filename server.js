@@ -25,7 +25,17 @@ app.post('/webhook', async (req, res) => {
   let responseText = "";
 
   try {
-    if (body.includes("hola") || body === "1") {
+    // Bienvenida amigable y opciones
+    if (body.includes("hola") || body === "1" || body === "menu") {
+      responseText = "💊 ¡Hola! Soy tu *botsito farmacéutico*. Bienvenido a la agenda de citas médicas.\n\n" +
+        "¿Qué deseas hacer?\n" +
+        "1️⃣ Ver horarios disponibles\n" +
+        "2️⃣ Ver mis citas confirmadas\n" +
+        "3️⃣ Reservar una cita\n\n" +
+        "Escribe el número de la opción que elijas.";
+    }
+    // Mostrar horarios disponibles
+    else if (body === "1") {
       const { data, error } = await supabase
         .from('horarios')
         .select('*')
@@ -33,51 +43,62 @@ app.post('/webhook', async (req, res) => {
       
       if (error) throw error;
       if (data.length === 0) {
-        responseText = "No hay horarios disponibles.";
+        responseText = "⚠️ No hay horarios disponibles en este momento.";
       } else {
-        let lista = "Horarios disponibles:\n";
-        data.forEach(h => {
-          lista += `- ${h.dia} ${h.hora}\n`;
+        let lista = "📅 *Horarios disponibles:*\n\n";
+        data.forEach((h, index) => {
+          lista += `${index + 1}. ${h.dia} ${h.hora}\n`;
         });
-        lista += "\nEscribe exactamente: lunes 10:00, lunes 11:00 o martes 15:00";
+        lista += "\nEscribe el *número* del horario que deseas reservar.";
         responseText = lista;
       }
     }
-    else if (["lunes 10:00", "lunes 11:00", "martes 15:00"].includes(body)) {
-      let idMap = {
-        "lunes 10:00": "lun10",
-        "lunes 11:00": "lun11",
-        "martes 15:00": "mar15"
-      };
-      const horario_id = idMap[body];
-
-      // Marcar como no disponible
-      const { error: updateError } = await supabase
+    // Reservar por número (1, 2, 3)
+    else if (body === "1" || body === "2" || body === "3") {
+      const { data: horarios, error: horError } = await supabase
         .from('horarios')
-        .update({ disponible: false })
-        .eq('id', horario_id)
-        .eq('disponible', true);
+        .select('*')
+        .eq('disponible', true)
+        .order('id', { ascending: true });
 
-      if (updateError) throw updateError;
+      if (horError) throw horError;
 
-      // Verificar si se actualizó (evita doble reserva)
-      const { data } = await supabase
-        .from('horarios')
-        .select('disponible')
-        .eq('id', horario_id)
-        .single();
+      const index = parseInt(body) - 1;
+      if (index >= 0 && index < horarios.length) {
+        const horario = horarios[index];
+        const horario_id = horario.id;
 
-      if (data && !data.disponible) {
-        await supabase.from('citas').insert({
-          usuario: from,
-          horario_id: horario_id,
-          fecha_confirmacion: new Date().toISOString().split('T')[0]
-        });
-        responseText = `Cita confirmada para ${body}.`;
+        // Marcar como no disponible
+        const { error: updateError } = await supabase
+          .from('horarios')
+          .update({ disponible: false })
+          .eq('id', horario_id)
+          .eq('disponible', true);
+
+        if (updateError) throw updateError;
+
+        // Verificar que se actualizó
+        const { data } = await supabase
+          .from('horarios')
+          .select('disponible')
+          .eq('id', horario_id)
+          .single();
+
+        if (data && !data.disponible) {
+          await supabase.from('citas').insert({
+            usuario: from,
+            horario_id: horario_id,
+            fecha_confirmacion: new Date().toISOString().split('T')[0]
+          });
+          responseText = `✅ ¡Cita confirmada!\n\n📅 *${horario.dia} ${horario.hora}*\n\nGracias por confiar en nuestro servicio. ¡Te esperamos!`;
+        } else {
+          responseText = "⚠️ Ese horario ya fue reservado por otro usuario. Elige otro.";
+        }
       } else {
-        responseText = "Ese horario ya no está disponible.";
+        responseText = "⚠️ Opción no válida. Escribe 1, 2 o 3.";
       }
     }
+    // Listar citas confirmadas
     else if (body === "2") {
       const { data, error } = await supabase
         .from('citas')
@@ -86,17 +107,18 @@ app.post('/webhook', async (req, res) => {
       
       if (error) throw error;
       if (data.length === 0) {
-        responseText = "No tienes citas confirmadas.";
+        responseText = "📋 Aún no tienes citas confirmadas.";
       } else {
-        let lista = "Tus citas confirmadas:\n";
+        let lista = "📋 *Tus citas confirmadas:*\n\n";
         data.forEach(c => {
-          lista += `- ${c.horario_id}\n`;
+          lista += `• ${c.horario_id}\n`;
         });
         responseText = lista;
       }
     }
+    // Opción no reconocida
     else {
-      responseText = "Escribe:\n1. Ver horarios\n2. Ver mis citas";
+      responseText = "💊 ¡Hola! Soy tu *botsito farmacéutico*.\n\nEscribe *hola* o elige una opción:\n1️⃣ Ver horarios\n2️⃣ Ver mis citas\n3️⃣ Reservar cita";
     }
 
     // Enviar respuesta por WhatsApp
@@ -108,16 +130,16 @@ app.post('/webhook', async (req, res) => {
 
     res.status(200).send('<Response></Response>');
   } catch (error) {
-    console.error(error);
+    console.error("Error:", error);
     res.status(500).send('Error');
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('Chatbot activo');
+  res.send('Chatbot farmacéutico activo ✅');
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
 });
