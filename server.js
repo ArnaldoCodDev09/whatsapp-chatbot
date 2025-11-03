@@ -18,6 +18,9 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
+// Estado de conversación por usuario (solo en memoria, suficiente para este proyecto)
+const userState = new Map();
+
 app.post('/webhook', async (req, res) => {
   const from = req.body.From;
   const body = (req.body.Body || "").trim().toLowerCase();
@@ -25,16 +28,17 @@ app.post('/webhook', async (req, res) => {
   let responseText = "";
 
   try {
-    // Bienvenida amigable y opciones
-    if (body.includes("hola") || body === "1" || body === "menu") {
+    // Siempre mostrar menú si es "hola" o "menu"
+    if (body.includes("hola") || body === "menu") {
       responseText = "💊 ¡Hola! Soy tu *botsito farmacéutico*. Bienvenido a la agenda de citas médicas.\n\n" +
-        "¿Qué deseas hacer?\n" +
+        "¿Qué deseas hacer hoy?\n" +
         "1️⃣ Ver horarios disponibles\n" +
         "2️⃣ Ver mis citas confirmadas\n" +
         "3️⃣ Reservar una cita\n\n" +
         "Escribe el número de la opción que elijas.";
+      userState.set(from, "menu");
     }
-    // Mostrar horarios disponibles
+    // Opción 1: Ver horarios
     else if (body === "1") {
       const { data, error } = await supabase
         .from('horarios')
@@ -43,7 +47,7 @@ app.post('/webhook', async (req, res) => {
       
       if (error) throw error;
       if (data.length === 0) {
-        responseText = "⚠️ No hay horarios disponibles en este momento.";
+        responseText = "⚠️ No hay horarios disponibles en este momento.\n\n¿Deseas hacer algo más?\nEscribe *hola* para ver el menú.";
       } else {
         let lista = "📅 *Horarios disponibles:*\n\n";
         data.forEach((h, index) => {
@@ -51,10 +55,51 @@ app.post('/webhook', async (req, res) => {
         });
         lista += "\nEscribe el *número* del horario que deseas reservar.";
         responseText = lista;
+        userState.set(from, "reserving");
       }
     }
-    // Reservar por número (1, 2, 3)
-    else if (body === "1" || body === "2" || body === "3") {
+    // Opción 2: Ver citas
+    else if (body === "2") {
+      const { data, error } = await supabase
+        .from('citas')
+        .select('horario_id')
+        .eq('usuario', from);
+      
+      if (error) throw error;
+      if (data.length === 0) {
+        responseText = "📋 Aún no tienes citas confirmadas.\n\n¿Deseas hacer algo más?\nEscribe *hola* para ver el menú.";
+      } else {
+        let lista = "📋 *Tus citas confirmadas:*\n\n";
+        data.forEach(c => {
+          lista += `• ${c.horario_id}\n`;
+        });
+        responseText = lista + "\n¿Deseas hacer algo más?\nEscribe *hola* para ver el menú.";
+      }
+    }
+    // Opción 3: Reservar cita (directo a lista de horarios)
+    else if (body === "3") {
+      const { data: horarios, error: horError } = await supabase
+        .from('horarios')
+        .select('*')
+        .eq('disponible', true)
+        .order('id', { ascending: true });
+
+      if (horError) throw horError;
+
+      if (horarios.length === 0) {
+        responseText = "⚠️ No hay horarios disponibles para reservar.\n\n¿Deseas hacer algo más?\nEscribe *hola* para ver el menú.";
+      } else {
+        let lista = "📅 *Elige un horario disponible:*\n\n";
+        horarios.forEach((h, index) => {
+          lista += `${index + 1}. ${h.dia} ${h.hora}\n`;
+        });
+        lista += "\nEscribe el *número* del horario que deseas reservar.";
+        responseText = lista;
+        userState.set(from, "reserving");
+      }
+    }
+    // Manejar selección de horario (cuando el usuario elige 1, 2 o 3 después del listado)
+    else if (userState.get(from) === "reserving") {
       const { data: horarios, error: horError } = await supabase
         .from('horarios')
         .select('*')
@@ -90,35 +135,22 @@ app.post('/webhook', async (req, res) => {
             horario_id: horario_id,
             fecha_confirmacion: new Date().toISOString().split('T')[0]
           });
-          responseText = `✅ ¡Cita confirmada!\n\n📅 *${horario.dia} ${horario.hora}*\n\nGracias por confiar en nuestro servicio. ¡Te esperamos!`;
+          responseText = `✅ ¡Cita confirmada!\n\n📅 *${horario.dia} ${horario.hora}*\n\nGracias por confiar en nuestro servicio. ¡Te esperamos!\n\n¿Deseas hacer algo más?\nEscribe *hola* para ver el menú.`;
         } else {
-          responseText = "⚠️ Ese horario ya fue reservado por otro usuario. Elige otro.";
+          responseText = "⚠️ Ese horario ya fue reservado por otro usuario. Elige otro.\n\nEscribe *hola* para ver el menú.";
         }
+        userState.delete(from); // Volver al menú
       } else {
-        responseText = "⚠️ Opción no válida. Escribe 1, 2 o 3.";
+        // Opción inválida → mostrar menú
+        responseText = "⚠️ Opción no válida. Por favor, elige una opción del menú.\n\n" +
+          "Escribe *hola* para ver las opciones nuevamente.";
+        userState.delete(from);
       }
     }
-    // Listar citas confirmadas
-    else if (body === "2") {
-      const { data, error } = await supabase
-        .from('citas')
-        .select('horario_id')
-        .eq('usuario', from);
-      
-      if (error) throw error;
-      if (data.length === 0) {
-        responseText = "📋 Aún no tienes citas confirmadas.";
-      } else {
-        let lista = "📋 *Tus citas confirmadas:*\n\n";
-        data.forEach(c => {
-          lista += `• ${c.horario_id}\n`;
-        });
-        responseText = lista;
-      }
-    }
-    // Opción no reconocida
+    // Cualquier otro mensaje → mostrar menú
     else {
-      responseText = "💊 ¡Hola! Soy tu *botsito farmacéutico*.\n\nEscribe *hola* o elige una opción:\n1️⃣ Ver horarios\n2️⃣ Ver mis citas\n3️⃣ Reservar cita";
+      responseText = "⚠️ No reconocí tu mensaje. Por favor, elige una opción del menú.\n\n" +
+        "Escribe *hola* para ver las opciones nuevamente.";
     }
 
     // Enviar respuesta por WhatsApp
@@ -131,6 +163,11 @@ app.post('/webhook', async (req, res) => {
     res.status(200).send('<Response></Response>');
   } catch (error) {
     console.error("Error:", error);
+    await twilioClient.messages.create({
+      body: "⚠️ Ocurrió un error. Por favor, escribe *hola* para intentar de nuevo.",
+      from: 'whatsapp:+14155238886',
+      to: from
+    });
     res.status(500).send('Error');
   }
 });
@@ -139,7 +176,8 @@ app.get('/', (req, res) => {
   res.send('Chatbot farmacéutico activo ✅');
 });
 
+// Render usa el puerto 10000 por defecto
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
 });
