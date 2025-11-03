@@ -18,12 +18,19 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// Función para mostrar el menú principal
-const getMenu = () => 
+// Cache temporal solo para eliminación de citas
+const userCitasCache = new Map();
+
+// Menú principal
+const getMenu = () =>
   "💊 ¡Hola! Soy tu *botsito farmacéutico*. Bienvenido a la agenda de citas médicas.\n\n" +
   "¿Qué deseas hacer?\n" +
   "1️⃣ Programar horario de atención\n" +
-  "2️⃣ Listar mis citas confirmadas";
+  "2️⃣ Listar mis citas confirmadas\n" +
+  "3️⃣ Eliminar una cita";
+
+// Convertir índice a letra: 0 → A, 1 → B, 2 → C...
+const toLetter = (index) => String.fromCharCode(65 + index);
 
 app.post('/webhook', async (req, res) => {
   const from = req.body.From;
@@ -32,99 +39,130 @@ app.post('/webhook', async (req, res) => {
   let responseText = "";
 
   try {
-    // Siempre mostrar menú si dice "hola"
     if (body.includes("hola")) {
       responseText = getMenu();
     }
-    // Opción 1: Mostrar horarios y permitir reserva si escribe un número del listado
+    // 1️⃣ Programar horario
     else if (body === "1") {
-      const { data, error } = await supabase
+      const { data: horarios, error } = await supabase
         .from('horarios')
         .select('*')
         .eq('disponible', true)
         .order('id', { ascending: true });
 
       if (error) throw error;
-      if (data.length === 0) {
-        responseText = "⚠️ No hay horarios disponibles en este momento.\n\n" + getMenu();
+      if (horarios.length === 0) {
+        responseText = "⚠️ No hay horarios disponibles.\n\n" + getMenu();
       } else {
-        let lista = "📅 *Horarios disponibles:*\n\n";
-        data.forEach((h, index) => {
-          lista += `${index + 1}. ${h.dia} ${h.hora}\n`;
+        let msg = "📅 *Horarios disponibles:*\n\n";
+        horarios.forEach((h, i) => {
+          msg += `${toLetter(i)}. ${h.dia} ${h.hora}\n`;
         });
-        lista += "\nEscribe el *número* del horario que deseas reservar.";
-        responseText = lista;
+        msg += "\nEscribe la *letra* del horario que deseas reservar.";
+        responseText = msg;
       }
     }
-    // Opción 2: Listar citas confirmadas
+    // 2️⃣ Listar citas
     else if (body === "2") {
-      const { data, error } = await supabase
+      const { data: citas, error } = await supabase
         .from('citas')
-        .select('horario_id')
-        .eq('usuario', from);
+        .select('id, horario_id')
+        .eq('usuario', from)
+        .order('fecha_confirmacion', { ascending: true });
 
       if (error) throw error;
-      if (data.length === 0) {
-        responseText = "📋 Aún no tienes citas confirmadas.\n\n" + getMenu();
+      if (citas.length === 0) {
+        responseText = "📋 No tienes citas confirmadas.\n\n" + getMenu();
       } else {
-        let lista = "📋 *Tus citas confirmadas:*\n\n";
-        data.forEach(c => {
-          lista += `• ${c.horario_id}\n`;
+        let msg = "📋 *Tus citas confirmadas:*\n\n";
+        citas.forEach((c, i) => {
+          msg += `${toLetter(i)}. ${c.horario_id}\n`;
         });
-        responseText = lista + "\n" + getMenu();
+        responseText = msg + "\n" + getMenu();
       }
     }
-    // Manejar selección de horario: solo si el mensaje es "1", "2" o "3" Y el usuario ya eligió opción 1 antes
-    // Pero como no usamos estado, solo aceptamos números si están entre 1-3 y hay horarios disponibles
-    else if (/^[123]$/.test(body)) {
-      const { data: horarios, error: horError } = await supabase
+    // 3️⃣ Eliminar cita
+    else if (body === "3") {
+      const { data: citas, error } = await supabase
+        .from('citas')
+        .select('id, horario_id')
+        .eq('usuario', from)
+        .order('fecha_confirmacion', { ascending: true });
+
+      if (error) throw error;
+      if (citas.length === 0) {
+        responseText = "📋 No tienes citas para eliminar.\n\n" + getMenu();
+      } else {
+        let msg = "🗑️ *Elige una cita para eliminar:*\n\n";
+        citas.forEach((c, i) => {
+          msg += `${toLetter(i)}. ${c.horario_id}\n`;
+        });
+        msg += "\nEscribe la *letra* de la cita que deseas cancelar.";
+        responseText = msg;
+        userCitasCache.set(from, citas);
+      }
+    }
+    // Reservar por letra (a, b, c)
+    else if (body.length === 1 && /[a-c]/.test(body)) {
+      const { data: horarios, error } = await supabase
         .from('horarios')
         .select('*')
         .eq('disponible', true)
         .order('id', { ascending: true });
 
-      if (horError) throw horError;
+      if (error) throw error;
 
-      const index = parseInt(body) - 1;
-      if (index >= 0 && index < horarios.length) {
-        const horario = horarios[index];
-        const horario_id = horario.id;
-
-        // Reservar
-        const { error: updateError } = await supabase
+      const idx = body.charCodeAt(0) - 97;
+      if (idx >= 0 && idx < horarios.length) {
+        const h = horarios[idx];
+        const { error: err1 } = await supabase
           .from('horarios')
           .update({ disponible: false })
-          .eq('id', horario_id)
+          .eq('id', h.id)
           .eq('disponible', true);
 
-        if (updateError) throw updateError;
+        if (err1) throw err1;
 
         const { data } = await supabase
           .from('horarios')
           .select('disponible')
-          .eq('id', horario_id)
+          .eq('id', h.id)
           .single();
 
         if (data && !data.disponible) {
           await supabase.from('citas').insert({
             usuario: from,
-            horario_id: horario_id,
+            horario_id: h.id,
             fecha_confirmacion: new Date().toISOString().split('T')[0]
           });
-          responseText = `✅ ¡Cita confirmada para ${horario.dia} ${horario.hora}!\n\n` + getMenu();
+          responseText = `✅ ¡Cita confirmada para ${h.dia} ${h.hora}!\n\n` + getMenu();
         } else {
           responseText = "⚠️ Ese horario ya fue reservado.\n\n" + getMenu();
         }
       } else {
-        responseText = "⚠️ Opción no válida. Por favor, elige una opción del menú:\n\n" + getMenu();
+        responseText = "⚠️ Letra no válida. Elige una *letra* del listado.\n\n" + getMenu();
       }
+    }
+    // Eliminar por letra (a, b, c)
+    else if (body.length === 1 && /[a-z]/.test(body) && userCitasCache.has(from)) {
+      const citas = userCitasCache.get(from);
+      const idx = body.charCodeAt(0) - 97;
+      if (idx >= 0 && idx < citas.length) {
+        const cita = citas[idx];
+        await supabase.from('citas').delete().eq('id', cita.id);
+        await supabase.from('horarios').update({ disponible: true }).eq('id', cita.horario_id);
+        responseText = `✅ Cita *${cita.horario_id}* eliminada. El horario ya está disponible.\n\n` + getMenu();
+      } else {
+        responseText = "⚠️ Letra no válida.\n\n" + getMenu();
+      }
+      userCitasCache.delete(from);
     }
     // Cualquier otro mensaje
     else {
-      responseText = "⚠️ No reconocí tu mensaje. Por favor, elige una opción del menú:\n\n" + getMenu();
+      responseText = "⚠️ No reconocí tu mensaje.\n\n" + getMenu();
     }
 
-    // Enviar respuesta
+    // Enviar respuesta por WhatsApp
     await twilioClient.messages.create({
       body: responseText,
       from: 'whatsapp:+14155238886',
@@ -147,6 +185,7 @@ app.get('/', (req, res) => {
   res.send('Chatbot farmacéutico activo ✅');
 });
 
+// Render espera el puerto 10000 por defecto
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
