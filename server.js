@@ -18,7 +18,7 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// Cache temporal solo para eliminación de citas
+// Cache temporal para eliminar citas
 const userCitasCache = new Map();
 
 // Menú principal
@@ -44,7 +44,7 @@ app.post('/webhook', async (req, res) => {
     }
     // 1️⃣ Programar horario
     else if (body === "1") {
-      const { data: horarios, error } = await supabase
+      const {  horarios, error } = await supabase
         .from('horarios')
         .select('*')
         .eq('disponible', true)
@@ -58,13 +58,13 @@ app.post('/webhook', async (req, res) => {
         horarios.forEach((h, i) => {
           msg += `${toLetter(i)}. ${h.dia} ${h.hora}\n`;
         });
-        msg += "\nEscribe la *letra* del horario que deseas reservar.";
+        msg += "\nEscribe la *letra* del horario que deseas reservar (ej: A).";
         responseText = msg;
       }
     }
     // 2️⃣ Listar citas
     else if (body === "2") {
-      const { data: citas, error } = await supabase
+      const {  citas, error } = await supabase
         .from('citas')
         .select('id, horario_id')
         .eq('usuario', from)
@@ -83,7 +83,7 @@ app.post('/webhook', async (req, res) => {
     }
     // 3️⃣ Eliminar cita
     else if (body === "3") {
-      const { data: citas, error } = await supabase
+      const {  citas, error } = await supabase
         .from('citas')
         .select('id, horario_id')
         .eq('usuario', from)
@@ -97,14 +97,14 @@ app.post('/webhook', async (req, res) => {
         citas.forEach((c, i) => {
           msg += `${toLetter(i)}. ${c.horario_id}\n`;
         });
-        msg += "\nEscribe la *letra* de la cita que deseas cancelar.";
+        msg += "\nEscribe **X** seguido de la letra (ej: XA) para cancelar.";
         responseText = msg;
         userCitasCache.set(from, citas);
       }
     }
     // Reservar por letra (a, b, c)
     else if (body.length === 1 && /[a-c]/.test(body)) {
-      const { data: horarios, error } = await supabase
+      const {  horarios, error } = await supabase
         .from('horarios')
         .select('*')
         .eq('disponible', true)
@@ -112,7 +112,7 @@ app.post('/webhook', async (req, res) => {
 
       if (error) throw error;
 
-      const idx = body.charCodeAt(0) - 97;
+      const idx = body.charCodeAt(0) - 97; // 'a' → 0
       if (idx >= 0 && idx < horarios.length) {
         const h = horarios[idx];
         const { error: err1 } = await supabase
@@ -140,20 +140,24 @@ app.post('/webhook', async (req, res) => {
           responseText = "⚠️ Ese horario ya fue reservado.\n\n" + getMenu();
         }
       } else {
-        responseText = "⚠️ Letra no válida. Elige una *letra* del listado.\n\n" + getMenu();
+        responseText = "⚠️ Letra no válida.\n\n" + getMenu();
       }
     }
-    // Eliminar por letra (a, b, c)
-    else if (body.length === 1 && /[a-z]/.test(body) && userCitasCache.has(from)) {
+    // Eliminar con XA, XB, XC
+    else if (/^x[a-z]$/i.test(body) && userCitasCache.has(from)) {
       const citas = userCitasCache.get(from);
-      const idx = body.charCodeAt(0) - 97;
+      const letter = body.substring(1).toUpperCase(); // "A" de "XA"
+      const idx = letter.charCodeAt(0) - 65; // A=0, B=1...
+
       if (idx >= 0 && idx < citas.length) {
         const cita = citas[idx];
+        // ✅ Eliminar cita
         await supabase.from('citas').delete().eq('id', cita.id);
+        // ✅ Volver a hacer el horario disponible
         await supabase.from('horarios').update({ disponible: true }).eq('id', cita.horario_id);
         responseText = `✅ Cita *${cita.horario_id}* eliminada. El horario ya está disponible.\n\n` + getMenu();
       } else {
-        responseText = "⚠️ Letra no válida.\n\n" + getMenu();
+        responseText = "⚠️ Código de eliminación no válido (ej: XA).\n\n" + getMenu();
       }
       userCitasCache.delete(from);
     }
@@ -162,7 +166,7 @@ app.post('/webhook', async (req, res) => {
       responseText = "⚠️ No reconocí tu mensaje.\n\n" + getMenu();
     }
 
-    // Enviar respuesta por WhatsApp
+    // Enviar respuesta
     await twilioClient.messages.create({
       body: responseText,
       from: 'whatsapp:+14155238886',
@@ -185,7 +189,6 @@ app.get('/', (req, res) => {
   res.send('Chatbot farmacéutico activo ✅');
 });
 
-// Render espera el puerto 10000 por defecto
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
